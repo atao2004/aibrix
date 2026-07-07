@@ -105,14 +105,30 @@ func (HpKVBackend) BuildService(kvCache *orchestrationv1alpha1.KVCache) *corev1.
 
 func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
 	params := getKVCacheParams(kvCache.GetAnnotations())
+
+	// Determine metadata address: use external connection if configured,
+	// otherwise fall back to the in-cluster Redis service.
+	redisAddr := fmt.Sprintf("%s-redis:%d", kvCache.Name, 6379)
+	redisPassword := ""
+	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Redis != nil &&
+		kvCache.Spec.Metadata.Redis.ExternalConnection != nil &&
+		kvCache.Spec.Metadata.Redis.ExternalConnection.Address != "" {
+		redisAddr = kvCache.Spec.Metadata.Redis.ExternalConnection.Address
+		// Note: password resolution from Secret requires a client and context,
+		// which are not available in this builder function. The password will be
+		// injected via the PasswordSecretRef as a Secret env var reference in a
+		// future iteration. For now, operators using external connections should
+		// set the password via the Watcher's Env field in the CRD spec.
+	}
+
 	envs := []corev1.EnvVar{
 		{
 			Name:  "REDIS_ADDR",
-			Value: fmt.Sprintf("%s-redis:%d", kvCache.Name, 6379),
+			Value: redisAddr,
 		},
 		{
 			Name:  "REDIS_PASSWORD",
-			Value: "",
+			Value: redisPassword,
 		},
 		{
 			Name:  "REDIS_DATABASE",

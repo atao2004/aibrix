@@ -116,6 +116,13 @@ func (r *DistributedReconciler) reconcileRedisService(ctx context.Context, kvCac
 	// The operator is providing their own managed Valkey/Redis-compatible endpoint.
 	if redisConfig.ExternalConnection != nil && redisConfig.ExternalConnection.Address != "" {
 		klog.Infof("Using external metadata connection at %s, skipping in-cluster Redis deployment", redisConfig.ExternalConnection.Address)
+
+		// Clean up any previously-created in-cluster Redis Pod/Service to avoid
+		// orphaned resources when migrating from in-cluster to external connection.
+		if err := r.cleanupInClusterRedis(ctx, kvCache); err != nil {
+			klog.Warningf("Failed to clean up in-cluster Redis resources: %v", err)
+		}
+
 		return r.validateExternalConnection(ctx, kvCache)
 	}
 
@@ -187,4 +194,38 @@ func (r *DistributedReconciler) resolveSecretValue(ctx context.Context, namespac
 	}
 
 	return string(value), nil
+}
+
+// cleanupInClusterRedis deletes the in-cluster Redis Pod and Service that may
+// have been previously created. This handles the migration path from in-cluster
+// to external connection without leaving orphaned resources.
+func (r *DistributedReconciler) cleanupInClusterRedis(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
+	redisPodName := fmt.Sprintf("%s-redis", kvCache.Name)
+	redisServiceName := fmt.Sprintf("%s-redis", kvCache.Name)
+
+	// Attempt to delete the Redis Pod (ignore NotFound errors).
+	pod := &corev1.Pod{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Namespace: kvCache.Namespace,
+		Name:      redisPodName,
+	}, pod); err == nil {
+		klog.Infof("Deleting orphaned in-cluster Redis Pod %s/%s", kvCache.Namespace, redisPodName)
+		if err := r.Client.Delete(ctx, pod); err != nil {
+			return fmt.Errorf("failed to delete Redis Pod %s: %w", redisPodName, err)
+		}
+	}
+
+	// Attempt to delete the Redis Service (ignore NotFound errors).
+	svc := &corev1.Service{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Namespace: kvCache.Namespace,
+		Name:      redisServiceName,
+	}, svc); err == nil {
+		klog.Infof("Deleting orphaned in-cluster Redis Service %s/%s", kvCache.Namespace, redisServiceName)
+		if err := r.Client.Delete(ctx, svc); err != nil {
+			return fmt.Errorf("failed to delete Redis Service %s: %w", redisServiceName, err)
+		}
+	}
+
+	return nil
 }
