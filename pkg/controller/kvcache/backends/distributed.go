@@ -26,6 +26,7 @@ import (
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -208,9 +209,13 @@ func (r *DistributedReconciler) cleanupInClusterRedis(ctx context.Context, kvCac
 	if err := r.Client.Get(ctx, types.NamespacedName{
 		Namespace: kvCache.Namespace,
 		Name:      redisPodName,
-	}, pod); err == nil {
+	}, pod); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to check Redis Pod %s: %w", redisPodName, err)
+		}
+	} else {
 		klog.Infof("Deleting orphaned in-cluster Redis Pod %s/%s", kvCache.Namespace, redisPodName)
-		if err := r.Client.Delete(ctx, pod); err != nil {
+		if err := r.Client.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete Redis Pod %s: %w", redisPodName, err)
 		}
 	}
@@ -220,9 +225,13 @@ func (r *DistributedReconciler) cleanupInClusterRedis(ctx context.Context, kvCac
 	if err := r.Client.Get(ctx, types.NamespacedName{
 		Namespace: kvCache.Namespace,
 		Name:      redisServiceName,
-	}, svc); err == nil {
+	}, svc); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to check Redis Service %s: %w", redisServiceName, err)
+		}
+	} else {
 		klog.Infof("Deleting orphaned in-cluster Redis Service %s/%s", kvCache.Namespace, redisServiceName)
-		if err := r.Client.Delete(ctx, svc); err != nil {
+		if err := r.Client.Delete(ctx, svc); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("failed to delete Redis Service %s: %w", redisServiceName, err)
 		}
 	}
