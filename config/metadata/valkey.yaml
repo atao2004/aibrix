@@ -2,8 +2,15 @@
 # Wire-compatible drop-in; uses the same RESP protocol, same env vars
 # (REDIS_HOST, REDIS_PORT, REDIS_PASSWORD), same go-redis client.
 #
-# Usage: kubectl apply -f config/metadata/valkey.yaml
-# (Use this instead of redis.yaml for a fully OSS-licensed deployment)
+# Usage (kustomize — recommended):
+#   Replace "redis.yaml" with "valkey.yaml" in config/metadata/kustomization.yaml,
+#   then deploy via: kubectl apply -k config/default
+#   The kustomize namePrefix ("aibrix-") will produce Service "aibrix-redis-master"
+#   which matches the REDIS_HOST env var in metadata.yaml.
+#
+# Usage (standalone — requires REDIS_HOST override):
+#   kubectl apply -f config/metadata/valkey.yaml
+#   Then set REDIS_HOST=redis-master in metadata-service (no "aibrix-" prefix).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
