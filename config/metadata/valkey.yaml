@@ -1,0 +1,54 @@
+# Valkey — OSS-licensed (BSD-3) alternative to Redis for AIBrix metadata store.
+# Wire-compatible drop-in; uses the same RESP protocol, same env vars
+# (REDIS_HOST, REDIS_PORT, REDIS_PASSWORD), same go-redis client.
+#
+# Usage: kubectl apply -f config/metadata/valkey.yaml
+# (Use this instead of redis.yaml for a fully OSS-licensed deployment)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey-master
+  namespace: aibrix-system
+  labels:
+    app: valkey
+spec:
+  selector:
+    matchLabels:
+      app: valkey
+      role: master
+      tier: backend
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: valkey
+        role: master
+        tier: backend
+    spec:
+      containers:
+      - name: master
+        image: valkey/valkey:8-alpine
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        ports:
+        - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-master
+  namespace: aibrix-system
+  labels:
+    app: valkey
+    role: master
+    tier: backend
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: valkey
+    role: master
+    tier: backend
