@@ -175,6 +175,159 @@ func TestReconcileRedisService_SingleReplicaAllowed(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// -- Test for reconcileRedisService with ExternalConnection --
+
+func TestReconcileRedisService_ExternalConnection(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = v1alpha1.AddToScheme(scheme)
+
+	t.Run("skips in-cluster deployment when external connection is set", func(t *testing.T) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "valkey-credentials",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"password": []byte("my-secret-password"),
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+		r := NewDistributedReconciler(c, constants.KVCacheBackendInfinistore)
+		r.Backend = mockBackend{}
+
+		kv := &v1alpha1.KVCache{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ext-test",
+				Namespace: "default",
+			},
+			Spec: v1alpha1.KVCacheSpec{
+				Metadata: &v1alpha1.MetadataSpec{
+					Redis: &v1alpha1.MetadataConfig{
+						ExternalConnection: &v1alpha1.ExternalConnectionConfig{
+							Address:           "valkey.example.com:6379",
+							PasswordSecretRef: "valkey-credentials",
+						},
+					},
+				},
+			},
+		}
+
+		err := r.reconcileRedisService(context.Background(), kv)
+		assert.NoError(t, err)
+	})
+
+	t.Run("fails when external address has no port", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(scheme).Build()
+		r := NewDistributedReconciler(c, constants.KVCacheBackendInfinistore)
+		r.Backend = mockBackend{}
+
+		kv := &v1alpha1.KVCache{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ext-test",
+				Namespace: "default",
+			},
+			Spec: v1alpha1.KVCacheSpec{
+				Metadata: &v1alpha1.MetadataSpec{
+					Redis: &v1alpha1.MetadataConfig{
+						ExternalConnection: &v1alpha1.ExternalConnectionConfig{
+							Address: "valkey.example.com",
+						},
+					},
+				},
+			},
+		}
+
+		err := r.reconcileRedisService(context.Background(), kv)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "must be in host:port format")
+	})
+
+	t.Run("fails when password secret does not exist", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(scheme).Build()
+		r := NewDistributedReconciler(c, constants.KVCacheBackendInfinistore)
+		r.Backend = mockBackend{}
+
+		kv := &v1alpha1.KVCache{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ext-test",
+				Namespace: "default",
+			},
+			Spec: v1alpha1.KVCacheSpec{
+				Metadata: &v1alpha1.MetadataSpec{
+					Redis: &v1alpha1.MetadataConfig{
+						ExternalConnection: &v1alpha1.ExternalConnectionConfig{
+							Address:           "valkey.example.com:6379",
+							PasswordSecretRef: "nonexistent-secret",
+						},
+					},
+				},
+			},
+		}
+
+		err := r.reconcileRedisService(context.Background(), kv)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to resolve PasswordSecretRef")
+	})
+
+	t.Run("fails when neither external connection nor runtime is set", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(scheme).Build()
+		r := NewDistributedReconciler(c, constants.KVCacheBackendInfinistore)
+		r.Backend = mockBackend{}
+
+		kv := &v1alpha1.KVCache{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ext-test",
+				Namespace: "default",
+			},
+			Spec: v1alpha1.KVCacheSpec{
+				Metadata: &v1alpha1.MetadataSpec{
+					Redis: &v1alpha1.MetadataConfig{},
+				},
+			},
+		}
+
+		err := r.reconcileRedisService(context.Background(), kv)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "requires either externalConnection or runtime to be set")
+	})
+
+	t.Run("resolves secret with custom key format", func(t *testing.T) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "my-secret",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"redis-pass": []byte("custom-key-password"),
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+		r := NewDistributedReconciler(c, constants.KVCacheBackendInfinistore)
+		r.Backend = mockBackend{}
+
+		kv := &v1alpha1.KVCache{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ext-test",
+				Namespace: "default",
+			},
+			Spec: v1alpha1.KVCacheSpec{
+				Metadata: &v1alpha1.MetadataSpec{
+					Redis: &v1alpha1.MetadataConfig{
+						ExternalConnection: &v1alpha1.ExternalConnectionConfig{
+							Address:           "valkey.example.com:6379",
+							PasswordSecretRef: "my-secret/redis-pass",
+						},
+					},
+				},
+			},
+		}
+
+		err := r.reconcileRedisService(context.Background(), kv)
+		assert.NoError(t, err)
+	})
+}
+
 // -- Mock Backend for isolation --
 
 type mockBackend struct {

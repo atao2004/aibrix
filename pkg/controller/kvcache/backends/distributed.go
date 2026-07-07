@@ -20,9 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strings"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -106,8 +110,21 @@ func (r *DistributedReconciler) reconcileMetadataService(ctx context.Context, kv
 }
 
 func (r *DistributedReconciler) reconcileRedisService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
-	// We only support etcd at this moment, redis will be supported later.
-	replicas := int(kvCache.Spec.Metadata.Redis.Runtime.Replicas)
+	redisConfig := kvCache.Spec.Metadata.Redis
+
+	// If an external connection is configured, skip in-cluster Redis deployment.
+	// The operator is providing their own managed Valkey/Redis-compatible endpoint.
+	if redisConfig.ExternalConnection != nil && redisConfig.ExternalConnection.Address != "" {
+		klog.Infof("Using external metadata connection at %s, skipping in-cluster Redis deployment", redisConfig.ExternalConnection.Address)
+		return r.validateExternalConnection(ctx, kvCache)
+	}
+
+	// Fall back to in-cluster Redis deployment (existing behavior).
+	if redisConfig.Runtime == nil {
+		return errors.New("redis metadata config requires either externalConnection or runtime to be set")
+	}
+
+	replicas := int(redisConfig.Runtime.Replicas)
 	if replicas != 1 {
 		klog.Warningf("replica %d > 1 is not supported at this moment, we will change to single replica", replicas)
 	}
@@ -117,11 +134,57 @@ func (r *DistributedReconciler) reconcileRedisService(ctx context.Context, kvCac
 		return err
 	}
 
-	// Create or update the etcd service for each pod
-	etcdService := r.Backend.BuildMetadataService(kvCache)
-	if err := r.ReconcileServiceObject(ctx, etcdService); err != nil {
+	// Create or update the metadata service for each pod
+	metadataService := r.Backend.BuildMetadataService(kvCache)
+	if err := r.ReconcileServiceObject(ctx, metadataService); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// validateExternalConnection validates the external connection configuration
+// and resolves the PasswordSecretRef if provided.
+func (r *DistributedReconciler) validateExternalConnection(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
+	extConn := kvCache.Spec.Metadata.Redis.ExternalConnection
+
+	// Validate address format (host:port)
+	if _, _, err := net.SplitHostPort(extConn.Address); err != nil {
+		return fmt.Errorf("external connection address %q must be in host:port format: %w", extConn.Address, err)
+	}
+
+	// If a password secret reference is provided, verify it exists.
+	if extConn.PasswordSecretRef != "" {
+		if _, err := r.resolveSecretValue(ctx, kvCache.Namespace, extConn.PasswordSecretRef); err != nil {
+			return fmt.Errorf("failed to resolve PasswordSecretRef %q: %w", extConn.PasswordSecretRef, err)
+		}
+	}
+
+	return nil
+}
+
+// resolveSecretValue reads a value from a Kubernetes Secret.
+// The secretRef format is "secretName/key" or just "secretName" (defaults to key "password").
+func (r *DistributedReconciler) resolveSecretValue(ctx context.Context, namespace, secretRef string) (string, error) {
+	parts := strings.SplitN(secretRef, "/", 2)
+	secretName := parts[0]
+	secretKey := "password"
+	if len(parts) == 2 {
+		secretKey = parts[1]
+	}
+
+	secret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      secretName,
+	}, secret); err != nil {
+		return "", fmt.Errorf("secret %q not found in namespace %q: %w", secretName, namespace, err)
+	}
+
+	value, ok := secret.Data[secretKey]
+	if !ok {
+		return "", fmt.Errorf("key %q not found in secret %q", secretKey, secretName)
+	}
+
+	return string(value), nil
 }
