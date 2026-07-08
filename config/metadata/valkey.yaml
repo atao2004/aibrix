@@ -14,7 +14,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: valkey-master
+  name: valkey-master # Unique name for the deployment
   namespace: aibrix-system
   labels:
     app: valkey
