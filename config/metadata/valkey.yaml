@@ -11,6 +11,9 @@
 # Usage (standalone — requires REDIS_HOST override):
 #   kubectl apply -f config/metadata/valkey.yaml
 #   Then set REDIS_HOST=redis-master in metadata-service (no "aibrix-" prefix).
+#
+# Note: Do not apply alongside redis.yaml — they share the same Service name
+# (redis-master) and will conflict. Use one or the other.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

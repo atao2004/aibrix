@@ -9,7 +9,7 @@
 #
 # Usage:
 #   Default mode:    docker compose up -d
-#   Valkey mode:     REDIS_IMAGE=valkey/valkey:8-alpine docker compose up -d
+#   Valkey mode:     REDIS_IMAGE=valkey/valkey:8-alpine REDIS_SERVER_CMD=valkey-server REDIS_CLI_CMD=valkey-cli docker compose up -d
 #   P/D mode:        docker compose --profile pd up -d
 
 x-common-gpu: &common-gpu
