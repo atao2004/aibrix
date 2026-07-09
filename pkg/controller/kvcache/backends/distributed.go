@@ -118,14 +118,15 @@ func (r *DistributedReconciler) reconcileRedisService(ctx context.Context, kvCac
 		klog.Infof("Using external metadata connection at %s, skipping in-cluster Redis deployment", redisConfig.ExternalConnection.Address)
 
 		// Validate first — only clean up in-cluster resources once the external
-		// config is confirmed to be well-formed. This prevents leaving the cluster
-		// with no metadata store if the operator sets an invalid address or secret.
+		// config is confirmed to be well-formed
 		if err := r.validateExternalConnection(ctx, kvCache); err != nil {
 			return err
 		}
 
-		// Clean up any previously-created in-cluster Redis Pod/Service to avoid
-		// orphaned resources when migrating from in-cluster to external connection.
+		// Only tear down in-cluster Redis once the external config is known-good.
+		// Returning the error on failure is intentional — the reconcile loop will
+		// retry until cleanup succeeds. Partial cleanup (e.g., Pod deleted but
+		// Service remains) is safe because the retry will finish the job.
 		if err := r.cleanupInClusterRedis(ctx, kvCache); err != nil {
 			return fmt.Errorf("cleaning up in-cluster Redis: %w", err)
 		}

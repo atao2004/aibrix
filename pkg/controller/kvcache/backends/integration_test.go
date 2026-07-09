@@ -104,6 +104,11 @@ func TestMigrationPath_CleanupInClusterRedis(t *testing.T) {
 
 	require.NoError(t, c.Create(ctx, redisPod))
 	require.NoError(t, c.Create(ctx, redisSvc))
+	t.Cleanup(func() {
+		// Ensure resources are cleaned up even if the test fails midway.
+		_ = c.Delete(context.Background(), redisPod)
+		_ = c.Delete(context.Background(), redisSvc)
+	})
 	t.Logf("Created in-cluster Redis Pod and Service: %s-redis", kvCacheName)
 
 	// Verify they exist
