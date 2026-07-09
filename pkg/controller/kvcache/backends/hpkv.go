@@ -106,51 +106,13 @@ func (HpKVBackend) BuildService(kvCache *orchestrationv1alpha1.KVCache) *corev1.
 func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
 	params := getKVCacheParams(kvCache.GetAnnotations())
 
-	// Determine metadata address: use external connection if configured,
-	// otherwise fall back to the in-cluster Redis service.
-	redisAddr := fmt.Sprintf("%s-redis:%d", kvCache.Name, 6379)
-	var redisPasswordEnv corev1.EnvVar
-	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Redis != nil &&
-		kvCache.Spec.Metadata.Redis.ExternalConnection != nil &&
-		kvCache.Spec.Metadata.Redis.ExternalConnection.Address != "" {
-		extConn := kvCache.Spec.Metadata.Redis.ExternalConnection
-		redisAddr = extConn.Address
-
-		// Wire PasswordSecretRef into the pod env via SecretKeyRef.
-		if extConn.PasswordSecretRef != "" {
-			parts := strings.SplitN(extConn.PasswordSecretRef, "/", 2)
-			secretName := parts[0]
-			secretKey := "password"
-			if len(parts) == 2 {
-				secretKey = parts[1]
-			}
-			redisPasswordEnv = corev1.EnvVar{
-				Name: "REDIS_PASSWORD",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-						Key:                  secretKey,
-					},
-				},
-			}
-		} else {
-			redisPasswordEnv = corev1.EnvVar{Name: "REDIS_PASSWORD", Value: ""}
-		}
-	} else {
-		redisPasswordEnv = corev1.EnvVar{Name: "REDIS_PASSWORD", Value: ""}
-	}
-
-	envs := []corev1.EnvVar{
-		{
-			Name:  "REDIS_ADDR",
-			Value: redisAddr,
-		},
-		redisPasswordEnv,
-		{
+	envs := buildRedisWatcherEnvVars(kvCache)
+	envs = append(envs,
+		corev1.EnvVar{
 			Name:  "REDIS_DATABASE",
 			Value: "0",
 		},
-		{
+		corev1.EnvVar{
 			Name: "AIBRIX_KVCACHE_WATCH_NAMESPACE",
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
@@ -158,11 +120,11 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 				},
 			},
 		},
-		{
+		corev1.EnvVar{
 			Name:  "AIBRIX_KVCACHE_WATCH_CLUSTER",
 			Value: kvCache.Name,
 		},
-	}
+	)
 
 	if len(kvCache.Spec.Watcher.Env) != 0 {
 		envs = append(envs, kvCache.Spec.Watcher.Env...)

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strings"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	"github.com/vllm-project/aibrix/pkg/constants"
@@ -118,13 +117,20 @@ func (r *DistributedReconciler) reconcileRedisService(ctx context.Context, kvCac
 	if redisConfig.ExternalConnection != nil && redisConfig.ExternalConnection.Address != "" {
 		klog.Infof("Using external metadata connection at %s, skipping in-cluster Redis deployment", redisConfig.ExternalConnection.Address)
 
+		// Validate first — only clean up in-cluster resources once the external
+		// config is confirmed to be well-formed. This prevents leaving the cluster
+		// with no metadata store if the operator sets an invalid address or secret.
+		if err := r.validateExternalConnection(ctx, kvCache); err != nil {
+			return err
+		}
+
 		// Clean up any previously-created in-cluster Redis Pod/Service to avoid
 		// orphaned resources when migrating from in-cluster to external connection.
 		if err := r.cleanupInClusterRedis(ctx, kvCache); err != nil {
-			klog.Warningf("Failed to clean up in-cluster Redis resources: %v", err)
+			return fmt.Errorf("cleaning up in-cluster Redis: %w", err)
 		}
 
-		return r.validateExternalConnection(ctx, kvCache)
+		return nil
 	}
 
 	// Fall back to in-cluster Redis deployment (existing behavior).
@@ -174,12 +180,7 @@ func (r *DistributedReconciler) validateExternalConnection(ctx context.Context, 
 // resolveSecretValue reads a value from a Kubernetes Secret.
 // The secretRef format is "secretName/key" or just "secretName" (defaults to key "password").
 func (r *DistributedReconciler) resolveSecretValue(ctx context.Context, namespace, secretRef string) (string, error) {
-	parts := strings.SplitN(secretRef, "/", 2)
-	secretName := parts[0]
-	secretKey := "password"
-	if len(parts) == 2 {
-		secretKey = parts[1]
-	}
+	secretName, secretKey := parseSecretRef(secretRef)
 
 	secret := &corev1.Secret{}
 	if err := r.Client.Get(ctx, types.NamespacedName{
