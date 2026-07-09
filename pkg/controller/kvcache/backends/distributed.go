@@ -115,13 +115,13 @@ func (r *DistributedReconciler) reconcileRedisService(ctx context.Context, kvCac
 	// If an external connection is configured, skip in-cluster Redis deployment.
 	// The operator is providing their own managed Valkey/Redis-compatible endpoint.
 	if redisConfig.ExternalConnection != nil && redisConfig.ExternalConnection.Address != "" {
-		klog.Infof("Using external metadata connection at %s, skipping in-cluster Redis deployment", redisConfig.ExternalConnection.Address)
-
 		// Validate first — only clean up in-cluster resources once the external
 		// config is confirmed to be well-formed
 		if err := r.validateExternalConnection(ctx, kvCache); err != nil {
 			return err
 		}
+
+		klog.Infof("Using external metadata connection at %s, skipping in-cluster Redis deployment", redisConfig.ExternalConnection.Address)
 
 		// Only tear down in-cluster Redis once the external config is known-good.
 		// Returning the error on failure is intentional — the reconcile loop will
@@ -159,7 +159,7 @@ func (r *DistributedReconciler) reconcileRedisService(ctx context.Context, kvCac
 }
 
 // validateExternalConnection validates the external connection configuration
-// and resolves the PasswordSecretRef if provided.
+// without reading secret values into memory.
 func (r *DistributedReconciler) validateExternalConnection(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
 	extConn := kvCache.Spec.Metadata.Redis.ExternalConnection
 
@@ -168,9 +168,9 @@ func (r *DistributedReconciler) validateExternalConnection(ctx context.Context, 
 		return fmt.Errorf("external connection address %q must be in host:port format: %w", extConn.Address, err)
 	}
 
-	// If a password secret reference is provided, verify it exists.
+	// If a password secret reference is provided, verify the secret and key exist.
 	if extConn.PasswordSecretRef != "" {
-		if _, err := r.resolveSecretValue(ctx, kvCache.Namespace, extConn.PasswordSecretRef); err != nil {
+		if err := r.validateSecretExists(ctx, kvCache.Namespace, extConn.PasswordSecretRef); err != nil {
 			return fmt.Errorf("failed to resolve PasswordSecretRef %q: %w", extConn.PasswordSecretRef, err)
 		}
 	}
@@ -178,8 +178,30 @@ func (r *DistributedReconciler) validateExternalConnection(ctx context.Context, 
 	return nil
 }
 
+// validateSecretExists checks that a Kubernetes Secret and key exist without
+// reading the secret value into memory. Use this for validation-only paths
+// where the value will be injected via SecretKeyRef rather than resolved at runtime.
+func (r *DistributedReconciler) validateSecretExists(ctx context.Context, namespace, secretRef string) error {
+	secretName, secretKey := parseSecretRef(secretRef)
+
+	secret := &corev1.Secret{}
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      secretName,
+	}, secret); err != nil {
+		return fmt.Errorf("failed to get secret %q in namespace %q: %w", secretName, namespace, err)
+	}
+
+	if _, ok := secret.Data[secretKey]; !ok {
+		return fmt.Errorf("key %q not found in secret %q", secretKey, secretName)
+	}
+
+	return nil
+}
+
 // resolveSecretValue reads a value from a Kubernetes Secret.
 // The secretRef format is "secretName/key" or just "secretName" (defaults to key "password").
+// Use this only when the plaintext value is actually needed at runtime.
 func (r *DistributedReconciler) resolveSecretValue(ctx context.Context, namespace, secretRef string) (string, error) {
 	secretName, secretKey := parseSecretRef(secretRef)
 
@@ -188,7 +210,7 @@ func (r *DistributedReconciler) resolveSecretValue(ctx context.Context, namespac
 		Namespace: namespace,
 		Name:      secretName,
 	}, secret); err != nil {
-		return "", fmt.Errorf("secret %q not found in namespace %q: %w", secretName, namespace, err)
+		return "", fmt.Errorf("failed to get secret %q in namespace %q: %w", secretName, namespace, err)
 	}
 
 	value, ok := secret.Data[secretKey]
@@ -206,36 +228,24 @@ func (r *DistributedReconciler) cleanupInClusterRedis(ctx context.Context, kvCac
 	redisPodName := fmt.Sprintf("%s-redis", kvCache.Name)
 	redisServiceName := fmt.Sprintf("%s-redis", kvCache.Name)
 
-	// Attempt to delete the Redis Pod (ignore NotFound errors).
+	// Delete the Redis Pod (ignore NotFound — may not exist).
 	pod := &corev1.Pod{}
-	if err := r.Client.Get(ctx, types.NamespacedName{
-		Namespace: kvCache.Namespace,
-		Name:      redisPodName,
-	}, pod); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to check Redis Pod %s: %w", redisPodName, err)
-		}
-	} else {
-		klog.Infof("Deleting orphaned in-cluster Redis Pod %s/%s", kvCache.Namespace, redisPodName)
-		if err := r.Client.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete Redis Pod %s: %w", redisPodName, err)
-		}
+	pod.Name = redisPodName
+	pod.Namespace = kvCache.Namespace
+	if err := r.Client.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete Redis Pod %s: %w", redisPodName, err)
+	} else if err == nil {
+		klog.Infof("Deleted orphaned in-cluster Redis Pod %s/%s", kvCache.Namespace, redisPodName)
 	}
 
-	// Attempt to delete the Redis Service (ignore NotFound errors).
+	// Delete the Redis Service (ignore NotFound — may not exist).
 	svc := &corev1.Service{}
-	if err := r.Client.Get(ctx, types.NamespacedName{
-		Namespace: kvCache.Namespace,
-		Name:      redisServiceName,
-	}, svc); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to check Redis Service %s: %w", redisServiceName, err)
-		}
-	} else {
-		klog.Infof("Deleting orphaned in-cluster Redis Service %s/%s", kvCache.Namespace, redisServiceName)
-		if err := r.Client.Delete(ctx, svc); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete Redis Service %s: %w", redisServiceName, err)
-		}
+	svc.Name = redisServiceName
+	svc.Namespace = kvCache.Namespace
+	if err := r.Client.Delete(ctx, svc); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete Redis Service %s: %w", redisServiceName, err)
+	} else if err == nil {
+		klog.Infof("Deleted orphaned in-cluster Redis Service %s/%s", kvCache.Namespace, redisServiceName)
 	}
 
 	return nil

@@ -530,7 +530,7 @@ func TestBuildRedisWatcherEnvVars(t *testing.T) {
 	})
 }
 
-// -- Test for validation-before-cleanup ordering --
+// --Test for validation-before-cleanup ordering --
 
 func TestReconcileRedisService_ValidationBeforeCleanup(t *testing.T) {
 	scheme := runtime.NewScheme()
